@@ -27,7 +27,7 @@ This started as a config for one G14 and was generalised, so it should come up c
 ## Install
 
 ```bash
-git clone https://github.com/<you>/omarchy-rog-control \
+git clone https://github.com/abidfarhanRepo/omarchy-rog-control \
   ~/.config/omarchy/plugins/armnt.rog-control
 omarchy restart shell
 ```
