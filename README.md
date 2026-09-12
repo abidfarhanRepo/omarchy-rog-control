@@ -12,7 +12,7 @@ The ROG wordmark sits in your bar. Clicking it opens the panel and changes nothi
 
 **Power profile.** Silent / Balanced / Turbo, through `power-profiles-daemon`. The panel labels them the way the laptop is badged but sets the profile the way the rest of Omarchy does, so the bar's own power widget stays in agreement. The raw ASUS thermal mode is shown underneath.
 
-**Battery charge limit.** 60% / 80% / 100%, written to the standard `charge_control_end_threshold` sysfs attribute. Capping at 80% meaningfully extends the life of a laptop that mostly lives on AC.
+**Battery charge limit.** 60% / 80% / 100%, written to the standard `charge_control_end_threshold` sysfs attribute. Capping at 80% meaningfully extends the life of a laptop that mostly lives on AC. Shown read-only unless you have granted your user the write — see below; the plugin itself never elevates.
 
 **Keyboard backlight.** Off / Low / Medium / High. A dropdown rather than a slider — four discrete hardware levels are fiddly to land on with a slider. The physical `Fn`+`Up` / `Fn`+`Down` keys keep working as normal.
 
@@ -36,33 +36,40 @@ Then add it to your bar — via `omarchy bar`, or by adding `{ "id": "armnt.rog-
 
 ### The charge-limit control
 
-Writing the charge limit is the one action that needs root. Run the bundled setup once:
+**This plugin ships no code that runs as root** — no installer, no setuid helper, no polkit action, no `sudo` or `pkexec` call anywhere in it. Nothing root-owned ever reads or executes a file from the plugin checkout, which lives in your home directory and is therefore writable by any process running as you.
+
+The consequence is that the charge limit is **read-only by default**: the panel displays it but does not offer the dropdown. Everything else works untouched.
+
+To make it settable, grant your own user the write with a udev rule. Paste this into a terminal — the rule text comes from your shell, not from any file in this repository:
 
 ```bash
-sudo bash ~/.config/omarchy/plugins/armnt.rog-control/install/install-charge-limit-helper.sh
+sudo tee /etc/udev/rules.d/99-rog-charge-limit.rules > /dev/null <<'EOF'
+ACTION=="add|change", SUBSYSTEM=="power_supply", ATTR{type}=="Battery", \
+  TEST=="charge_control_end_threshold", \
+  RUN+="/usr/bin/chgrp wheel /sys%p/charge_control_end_threshold", \
+  RUN+="/usr/bin/chmod 0664 /sys%p/charge_control_end_threshold"
+EOF
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=power_supply
 ```
 
-It installs two things:
+Read it before you run it — that is the point of pasting it rather than executing a script.
 
-- `/usr/local/bin/rog-charge-limit` — a helper that accepts **only** the fixed set of levels the panel offers and writes the standard sysfs attribute. It cannot be widened by argument.
-- A **polkit action** bound to that exact absolute path, with `allow_active=yes` and `allow_inactive=auth_admin`. The person physically logged in at the machine can set the charge limit without a password; a remote or background session still has to authenticate as an administrator.
+What it does and does not grant: members of `wheel` gain write access to one battery sysfs attribute. Those users can already run `sudo`, so this grants them no privilege they did not have; it only removes the prompt. It installs no executable, and the rule is inert data rather than code. Change `wheel` to another group if your setup differs.
 
-This deliberately uses polkit rather than a `sudoers` `NOPASSWD` rule. A sudoers grant applies to the user everywhere, including over SSH, and wildcard-argument rules are a well-known footgun. A polkit action is scoped to a local seat and to one path, which is the right shape for a desktop control.
+To undo it, delete `/etc/udev/rules.d/99-rog-charge-limit.rules` and reload as above.
 
-Until the helper is installed the panel still works — polkit simply prompts.
-
-The power profile and keyboard backlight never need root at all; they go through `power-profiles-daemon` and `brightnessctl`.
+The power profile and keyboard backlight never need any of this — they go through `power-profiles-daemon` and `brightnessctl`, which are unprivileged by design.
 
 ### Removal
 
 ```bash
 rm -rf ~/.config/omarchy/plugins/armnt.rog-control
-sudo rm -f /usr/local/bin/rog-charge-limit \
-           /usr/share/polkit-1/actions/org.omarchy.rogcontrol.policy
+sudo rm -f /etc/udev/rules.d/99-rog-charge-limit.rules   # only if you added it
 omarchy restart shell
 ```
 
-Then remove the `{ "id": "armnt.rog-control" }` entry from the `right` section of `~/.config/omarchy/shell.json`. The plugin writes nothing else — no dotfiles, no state directory, and it never edits your configuration on its own.
+Then remove the `{ "id": "armnt.rog-control" }` entry from the `right` section of `~/.config/omarchy/shell.json`. The plugin writes nothing else — no dotfiles, no state directory, no system files, and it never edits your configuration on its own.
 
 ## How it is put together
 
@@ -71,7 +78,7 @@ RogControl.qml    the panel: an Omarchy Panel + KeyboardPanel with Dropdowns
 RogMark.qml       the ROG wordmark, drawn as vector paths
 bin/rog-status    reads all hardware state, emits key<TAB>value lines
 bin/rog-set       applies one setting; the only place privilege is handled
-install/          the charge-limit helper and its polkit action
+(no install/)     nothing in this plugin runs as root
 ```
 
 Every read goes through `bin/rog-status` and every write through `bin/rog-set`, both resolved relative to the QML file so the plugin is self-contained and needs nothing on `$PATH`. Both are plain shell and can be run directly, which makes the panel easy to debug:
@@ -84,7 +91,7 @@ The wordmark is drawn with `QtQuick.Shapes` rather than shipped as an image or b
 
 ## Requirements
 
-Omarchy 4.0+, `power-profiles-daemon`, `brightnessctl`, and `polkit` for the charge-limit control. All are already present on a standard Omarchy install. No external downloads, no AUR packages, nothing fetched at runtime.
+Omarchy 4.0+, `power-profiles-daemon`, `brightnessctl`. Both are already present on a standard Omarchy install. No external downloads, no AUR packages, nothing fetched at runtime, and no privileged component.
 
 ## Licence
 

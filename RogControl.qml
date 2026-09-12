@@ -38,13 +38,17 @@ Panel {
   // ---- capability gates ----------------------------------------------------
   readonly property bool hasProfiles: String(root.state.profile_choices || "") !== ""
   readonly property bool hasCap: root.state.cap !== undefined
+  // The charge limit is only offered as a control when the attribute is
+  // actually writable. Otherwise it is shown read-only, rather than a dropdown
+  // that would silently fail. See the README for the udev rule that grants it.
+  readonly property bool capWritable: String(root.state.cap_writable || "0") === "1"
   readonly property bool hasKbd: root.state.kbd !== undefined
   readonly property bool hasDgpu: root.state.dgpu !== undefined
 
   readonly property var controls: {
     var out = []
     if (root.hasProfiles) out.push("profile")
-    if (root.hasCap) out.push("cap")
+    if (root.hasCap && root.capWritable) out.push("cap")
     if (root.hasKbd) out.push("kbd")
     return out
   }
@@ -373,6 +377,7 @@ Panel {
           Dropdown {
             id: capDropdown
             width: parent.width
+            visible: root.capWritable
             label: "Charge limit"
             fontFamily: root.bar.fontFamily
             foreground: root.bar.foreground
@@ -383,6 +388,23 @@ Panel {
               if (h) { root.cursorActive = true; root.cursorIndex = root.controls.indexOf("cap") }
             }
             onChanged: function(v) { root.apply("cap", v) }
+          }
+
+          InfoPair {
+            visible: !root.capWritable
+            label: "Charge limit"
+            value: root.activeCap + "%"
+          }
+
+          Text {
+            width: parent.width
+            visible: !root.capWritable
+            textFormat: Text.PlainText
+            text: "Read-only. See the README to install the udev rule that makes this settable."
+            color: Qt.darker(root.bar.foreground, 1.4)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
         }
 
