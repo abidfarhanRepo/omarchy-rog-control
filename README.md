@@ -34,17 +34,35 @@ omarchy restart shell
 
 Then add it to your bar — via `omarchy bar`, or by adding `{ "id": "armnt.rog-control" }` to the `right` section of `~/.config/omarchy/shell.json`.
 
-### Optional: passwordless charge limit
+### The charge-limit control
 
-Writing the charge limit needs root. Out of the box the panel asks through polkit. To make it passwordless, run the bundled setup once:
+Writing the charge limit is the one action that needs root. Run the bundled setup once:
 
 ```bash
-sudo bash ~/.config/omarchy/plugins/armnt.rog-control/install/enable-passwordless-charge-limit.sh
+sudo bash ~/.config/omarchy/plugins/armnt.rog-control/install/install-charge-limit-helper.sh
 ```
 
-That installs a small helper that accepts **only** the fixed set of levels the panel offers, plus a `sudoers` rule granting `NOPASSWD` for exactly that one command. Nothing else is widened. The script verifies the result and fails loudly if the rule did not take.
+It installs two things:
 
-The power profile and keyboard backlight never need root — they go through `power-profiles-daemon` and `brightnessctl` respectively.
+- `/usr/local/bin/rog-charge-limit` — a helper that accepts **only** the fixed set of levels the panel offers and writes the standard sysfs attribute. It cannot be widened by argument.
+- A **polkit action** bound to that exact absolute path, with `allow_active=yes` and `allow_inactive=auth_admin`. The person physically logged in at the machine can set the charge limit without a password; a remote or background session still has to authenticate as an administrator.
+
+This deliberately uses polkit rather than a `sudoers` `NOPASSWD` rule. A sudoers grant applies to the user everywhere, including over SSH, and wildcard-argument rules are a well-known footgun. A polkit action is scoped to a local seat and to one path, which is the right shape for a desktop control.
+
+Until the helper is installed the panel still works — polkit simply prompts.
+
+The power profile and keyboard backlight never need root at all; they go through `power-profiles-daemon` and `brightnessctl`.
+
+### Removal
+
+```bash
+rm -rf ~/.config/omarchy/plugins/armnt.rog-control
+sudo rm -f /usr/local/bin/rog-charge-limit \
+           /usr/share/polkit-1/actions/org.omarchy.rogcontrol.policy
+omarchy restart shell
+```
+
+Then remove the `{ "id": "armnt.rog-control" }` entry from the `right` section of `~/.config/omarchy/shell.json`. The plugin writes nothing else — no dotfiles, no state directory, and it never edits your configuration on its own.
 
 ## How it is put together
 
@@ -53,7 +71,7 @@ RogControl.qml    the panel: an Omarchy Panel + KeyboardPanel with Dropdowns
 RogMark.qml       the ROG wordmark, drawn as vector paths
 bin/rog-status    reads all hardware state, emits key<TAB>value lines
 bin/rog-set       applies one setting; the only place privilege is handled
-install/          one-time passwordless setup for the charge limit
+install/          the charge-limit helper and its polkit action
 ```
 
 Every read goes through `bin/rog-status` and every write through `bin/rog-set`, both resolved relative to the QML file so the plugin is self-contained and needs nothing on `$PATH`. Both are plain shell and can be run directly, which makes the panel easy to debug:
@@ -66,7 +84,7 @@ The wordmark is drawn with `QtQuick.Shapes` rather than shipped as an image or b
 
 ## Requirements
 
-Omarchy 4.0+, `power-profiles-daemon`, `brightnessctl`. All are already present on a standard Omarchy install.
+Omarchy 4.0+, `power-profiles-daemon`, `brightnessctl`, and `polkit` for the charge-limit control. All are already present on a standard Omarchy install. No external downloads, no AUR packages, nothing fetched at runtime.
 
 ## Licence
 

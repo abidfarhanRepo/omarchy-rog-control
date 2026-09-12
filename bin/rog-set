@@ -8,9 +8,10 @@
 #       brightnessctl, which is logind/udev-backed. No root.
 #   cap <50|60|70|80|90|100>
 #       the whitelisted helper installed by
-#       install/enable-passwordless-charge-limit.sh. Passwordless once that
-#       has been run; falls back to a polkit prompt if it has not, so the
-#       control still works out of the box.
+#       install/install-charge-limit-helper.sh, run through polkit. With the
+#       bundled polkit action in place this is passwordless for the locally
+#       active session; without it, polkit prompts, so the control still
+#       works out of the box.
 set -uo pipefail
 
 usage() { echo "usage: rog-set profile <name> | cap <50..100> | kbd <n>" >&2; exit 2; }
@@ -35,11 +36,13 @@ case "$1" in
     helper=/usr/local/bin/rog-charge-limit
     [[ -x $helper ]] || helper=/usr/local/bin/asus-charge-cap   # pre-1.0 name
     if [[ ! -x $helper ]]; then
-      echo "charge-limit helper not installed: run install/enable-passwordless-charge-limit.sh" >&2
+      echo "charge-limit helper not installed: run install/install-charge-limit-helper.sh" >&2
       exit 1
     fi
+    # Opportunistic: honours an existing sudo grant if the machine already has
+    # one, and fails instantly rather than prompting when it does not. This
+    # creates no policy of its own.
     if sudo -n "$helper" "$2" 2>/dev/null; then exit 0; fi
-    # Not whitelisted (yet) — ask through polkit rather than failing silently.
     exec pkexec "$helper" "$2"
     ;;
 
