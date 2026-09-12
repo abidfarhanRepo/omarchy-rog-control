@@ -1,0 +1,127 @@
+#!/bin/bash
+# Live hardware state for the ROG control panel. Emits "key<TAB>value" lines.
+#
+# Design rules, because a bar panel that lies is worse than no panel:
+#   * every device is resolved by NAME or DRIVER at call time, never by a
+#     hwmon/led/PCI index -- those renumber across boots and driver reloads;
+#   * anything absent is simply not emitted, so the panel hides that section
+#     rather than showing a dash on hardware that never had the feature;
+#   * the discrete GPU is never woken just to be reported on.
+set -uo pipefail
+
+emit() { printf '%s\t%s\n' "$1" "$2"; }
+
+hwmon_by_name() {
+  local want=$1 h
+  for h in /sys/class/hwmon/hwmon*; do
+    [[ -r $h/name ]] || continue
+    [[ $(<"$h/name") == "$want" ]] && { echo "$h"; return 0; }
+  done
+  return 1
+}
+
+first_glob() { local p; for p in "$@"; do [[ -e $p ]] && { echo "$p"; return 0; }; done; return 1; }
+
+# --- identity ---------------------------------------------------------------
+# DMI repeats the board name ("ROG Zephyrus G14 GA401IV_GA401IV"); keep the
+# marketing name and the first board code, drop the duplicate.
+if [[ -r /sys/class/dmi/id/product_name ]]; then
+  model=$(</sys/class/dmi/id/product_name)
+  model=${model%%_*}
+  emit model "$model"
+fi
+if [[ -r /sys/class/dmi/id/product_family ]]; then
+  emit family "$(</sys/class/dmi/id/product_family)"
+fi
+
+cpu=$(awk -F': ' '/^model name/{print $2; exit}' /proc/cpuinfo 2>/dev/null)
+# Trim the marketing tail so it fits a panel subtitle.
+cpu=${cpu/ with Radeon Graphics/}
+cpu=${cpu/(R)/}; cpu=${cpu/(TM)/}
+cpu=$(echo "$cpu" | sed -E 's/ +[0-9]+-Core Processor//; s/ CPU @.*//; s/  +/ /g; s/^ //; s/ $//')
+[[ -n $cpu ]] && emit cpu_model "$cpu"
+
+# Discrete GPU name from the PCI modalias + pci.ids. Pure sysfs string
+# parsing: it never touches config space, so a sleeping dGPU stays asleep.
+dgpu_dev=""
+for d in /sys/bus/pci/drivers/nvidia/0000:* /sys/bus/pci/drivers/amdgpu/0000:*; do
+  [[ -e $d/power/runtime_status ]] || continue
+  # Skip the integrated one: it is the GPU that is not runtime-suspendable
+  # and shares the CPU's root complex. Discrete parts hang off a bridge.
+  [[ -e $d/../0000:00:00.0 ]] && continue
+  dgpu_dev=$d; break
+done
+if [[ -n $dgpu_dev && -r $dgpu_dev/modalias ]]; then
+  ma=$(<"$dgpu_dev/modalias")
+  if [[ $ma =~ pci:v0000([0-9A-Fa-f]{4})d0000([0-9A-Fa-f]{4}) ]]; then
+    ven=${BASH_REMATCH[1],,}; dev=${BASH_REMATCH[2],,}
+    if [[ -r /usr/share/hwdata/pci.ids ]]; then
+      name=$(awk -v v="$ven" -v d="$dev" '
+        /^[0-9a-f]{4}/ { invendor = ($1 == v) }
+        invendor && /^\t[0-9a-f]{4}/ { sub(/^\t/,""); if (substr($0,1,4) == d) { print substr($0,7); exit } }
+      ' /usr/share/hwdata/pci.ids)
+      # pci.ids reads "TU106M [GeForce RTX 2060 Max-Q]" — the die code is
+      # noise in a panel subtitle, so prefer the bracketed marketing name.
+      [[ $name =~ \[(.+)\] ]] && name=${BASH_REMATCH[1]}
+      [[ -n $name ]] && emit dgpu_model "$name"
+    fi
+  fi
+  emit dgpu "$(<"$dgpu_dev/power/runtime_status")"
+fi
+
+# --- power profile ----------------------------------------------------------
+# Reported in power-profiles-daemon vocabulary so it matches the rest of
+# omarchy; the raw ASUS/ACPI name is emitted alongside for display only.
+if command -v omarchy-powerprofiles-list >/dev/null; then
+  choices=$(omarchy-powerprofiles-list 2>/dev/null | paste -sd' ')
+  [[ -n $choices ]] && emit profile_choices "$choices"
+  active=$(omarchy-powerprofiles-list --active-state 2>/dev/null | awk -F'\t' '$2==1 {print $1; exit}')
+  [[ -n $active ]] && emit profile "$active"
+fi
+[[ -r /sys/firmware/acpi/platform_profile ]] && emit acpi_profile "$(</sys/firmware/acpi/platform_profile)"
+
+# --- battery ----------------------------------------------------------------
+if bat=$(first_glob /sys/class/power_supply/BAT*); then
+  [[ -r $bat/capacity ]] && emit battery "$(<"$bat/capacity")"
+  [[ -r $bat/status ]] && emit battery_state "$(<"$bat/status")"
+  [[ -r $bat/charge_control_end_threshold ]] && emit cap "$(<"$bat/charge_control_end_threshold")"
+  if [[ -r $bat/power_now ]]; then
+    emit battery_watts "$(awk -v v="$(<"$bat/power_now")" 'BEGIN{printf "%.1f", v/1000000}')"
+  elif [[ -r $bat/current_now && -r $bat/voltage_now ]]; then
+    emit battery_watts "$(awk -v c="$(<"$bat/current_now")" -v v="$(<"$bat/voltage_now")" 'BEGIN{printf "%.1f", (c*v)/1e12}')"
+  fi
+fi
+
+# --- keyboard backlight -----------------------------------------------------
+if kbd=$(first_glob /sys/class/leds/*kbd_backlight*); then
+  emit kbd "$(<"$kbd/brightness")"
+  emit kbd_max "$(<"$kbd/max_brightness")"
+fi
+
+# --- fans -------------------------------------------------------------------
+if asus=$(hwmon_by_name asus); then
+  for f in "$asus"/fan[0-9]_input; do
+    [[ -e $f ]] || continue
+    lbl_file=${f%_input}_label
+    if [[ -r $lbl_file ]]; then lbl=$(<"$lbl_file"); else lbl=$(basename "${f%_input}"); fi
+    emit "fan_${lbl}" "$(<"$f")"
+  done
+fi
+
+# --- temperatures -----------------------------------------------------------
+for probe in k10temp:cpu_temp coretemp:cpu_temp amdgpu:igpu_temp; do
+  nm=${probe%%:*}; key=${probe##*:}
+  if h=$(hwmon_by_name "$nm"); then
+    [[ -r $h/temp1_input ]] && emit "$key" "$(( $(<"$h/temp1_input") / 1000 ))"
+  fi
+done
+
+# dGPU sensors only when it is already awake.
+if [[ -n ${dgpu_dev:-} && $(<"$dgpu_dev/power/runtime_status") == active ]] && command -v nvidia-smi >/dev/null; then
+  read -r t w < <(nvidia-smi --query-gpu=temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null | tr -d ',' | head -1)
+  [[ -n ${t:-} ]] && emit dgpu_temp "$t"
+  [[ -n ${w:-} ]] && emit dgpu_watts "$w"
+fi
+
+# --- cpu / memory -----------------------------------------------------------
+command -v omarchy-system-stats >/dev/null && omarchy-system-stats 2>/dev/null

@@ -1,0 +1,55 @@
+#!/bin/bash
+# Apply one ROG setting. Single entry point for everything the panel can
+# change, so the privilege story lives in one auditable place.
+#
+#   profile <power-saver|balanced|performance|quiet|turbo>
+#       power-profiles-daemon over D-Bus. No root.
+#   kbd <level>
+#       brightnessctl, which is logind/udev-backed. No root.
+#   cap <50|60|70|80|90|100>
+#       the whitelisted helper installed by
+#       install/enable-passwordless-charge-limit.sh. Passwordless once that
+#       has been run; falls back to a polkit prompt if it has not, so the
+#       control still works out of the box.
+set -uo pipefail
+
+usage() { echo "usage: rog-set profile <name> | cap <50..100> | kbd <n>" >&2; exit 2; }
+(( $# == 2 )) || usage
+
+case "$1" in
+  profile)
+    # ACPI and power-profiles-daemon use different vocabularies for the same
+    # three states ("quiet" vs "power-saver"). Normalise, or the switch
+    # silently no-ops.
+    case "$2" in
+      quiet|power-saver)      prof=power-saver ;;
+      balanced)               prof=balanced ;;
+      performance|turbo)      prof=performance ;;
+      *) usage ;;
+    esac
+    exec omarchy-powerprofiles-set autodetect "$prof"
+    ;;
+
+  cap)
+    case "$2" in 50|60|70|80|90|100) ;; *) usage ;; esac
+    helper=/usr/local/bin/rog-charge-limit
+    [[ -x $helper ]] || helper=/usr/local/bin/asus-charge-cap   # pre-1.0 name
+    if [[ ! -x $helper ]]; then
+      echo "charge-limit helper not installed: run install/enable-passwordless-charge-limit.sh" >&2
+      exit 1
+    fi
+    if sudo -n "$helper" "$2" 2>/dev/null; then exit 0; fi
+    # Not whitelisted (yet) — ask through polkit rather than failing silently.
+    exec pkexec "$helper" "$2"
+    ;;
+
+  kbd)
+    [[ $2 =~ ^[0-9]+$ ]] || usage
+    dev=""
+    for c in /sys/class/leds/*kbd_backlight*; do [[ -e $c ]] && { dev=$(basename "$c"); break; }; done
+    [[ -n $dev ]] || { echo "no keyboard backlight device" >&2; exit 1; }
+    exec brightnessctl -q -d "$dev" set "$2"
+    ;;
+
+  *) usage ;;
+esac

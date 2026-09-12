@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "armnt.rog-control",
+  "name": "ROG control",
+  "version": "1.0.0",
+  "author": "armnt",
+  "license": "MIT",
+  "description": "Hardware controls for ASUS ROG and TUF laptops. Live CPU/GPU temperatures and fan speeds, with dropdowns for the power profile, the battery charge limit, and the keyboard backlight. Every device is detected at runtime, so sections that the machine does not support hide themselves rather than showing dead controls.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "RogControl.qml"
+  },
+  "barWidget": {
+    "displayName": "ROG control",
+    "description": "ROG wordmark in the bar; click for temperatures, fans, power profile, charge limit and keyboard backlight.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
